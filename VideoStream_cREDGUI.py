@@ -8,7 +8,8 @@ import datetime
 from instamatic.formats import write_tiff
 from instamatic.camera import Camera
 import os
-
+import glob
+import ImgConversion
 
 class ImageGrabber(object):
     """docstring for ImageGrabber"""
@@ -122,6 +123,7 @@ class VideoStream(threading.Thread):
         
         self.saving_path = Entry(frame, width = 50, textvariable=self.var_saving_path)
         self.name_data=Entry(frame, width = 50, textvariable=self.var_name_dataset)
+        self.Expt=Entry(frame,width=50,textvariable=self.var_dataRecordExpt)
         
         self.ConfirmButton1= Button(frame,text="Confirm",command=self.mkdirs)
         self.ConfirmButton1.grid(row=3,column=3)
@@ -129,10 +131,12 @@ class VideoStream(threading.Thread):
         #var=cRED_Collection()
         self.CollectionButton=Button(frame,text="Start Collection",command=self.collection)
         self.CollectionButton.grid(row=3,column=4)
-        self.CollectionButton=Button(frame,text="Stop Collection",command=self.collectionstop)
-        self.CollectionButton.grid(row=3,column=5)
-        self.CollectionButton=Button(frame,text="Continue Collection",command=self.continuecollection)
-        self.CollectionButton.grid(row=3,column=6)
+        self.CollectionStopButton=Button(frame,text="Stop Collection",command=self.collectionstop)
+        self.CollectionStopButton.grid(row=3,column=5)
+        self.CollectionContButton=Button(frame,text="Continue Collection",command=self.continuecollection)
+        self.CollectionContButton.grid(row=3,column=6)
+        self.exitButton=Button(frame,text="EXIT",command=self.close_window)
+        self.exitButton.grid(row=3,column=7)
         # self.e_overhead    = Entry(frame, bd=0, width=ewidth, textvariable=self.var_overhead, state=DISABLED)
         
         Label(frame, anchor=E, width=lwidth, text="fps:").grid(row=1, column=0)
@@ -143,8 +147,14 @@ class VideoStream(threading.Thread):
         self.saving_path.grid(row=2,column=2)
         Label(frame, anchor=E, width=30, text="Name of current dataset:").grid(row=3,column=0)
         self.name_data.grid(row=3,column=2)
+        Label(frame, anchor=E, width=30,text="Exposure time for data collection").grid(row=4,column=0)
+        self.Expt.grid(row=4,column=2)
         # Label(frame, anchor=E, width=lwidth, text="overhead (ms):").grid(row=1, column=4)
         # self.e_overhead.grid(row=1, column=5)
+        
+        """        self.progress=ttk.Progressbar(frame,orient=HORIZONTAL,length=100,mode='determinate')
+        self.progress.pack(expand=True,fill=BOTH,side=TOP)
+        self.progress.start(50)"""
         
         frame.pack()
 
@@ -181,6 +191,7 @@ class VideoStream(threading.Thread):
         self.var_interval = DoubleVar()
         self.var_saving_path = StringVar(value="C:/")
         self.var_name_dataset=StringVar(value="Co-CAU-30_1")
+        self.var_dataRecordExpt=StringVar(value="0.5")
         # self.var_overhead = DoubleVar()
 
         self.var_frametime = DoubleVar()
@@ -368,7 +379,7 @@ class VideoStream(threading.Thread):
             os.mkdir(os.path.join(mother_path,dataset_name,"RED"))
         
         import logging
-        self.logger=logging.getLogger('DataCollection_GUI')
+        self.logger=logging.getLogger('DCGUI')
         hdlr=logging.FileHandler(os.path.join(self.saving,'DataCollectionLog.log'))
         formatter=logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
         hdlr.setFormatter(formatter)
@@ -380,12 +391,74 @@ class VideoStream(threading.Thread):
     
     def collection(self):
         self.t=threading.Event()
+        a0=ctrl.stageposition.a
+        a=a0
+        ind_set=[]
+        ind=10001
+        ind_set.append(ind)
+        expt=float(self.Expt.get())
+        
+        self.pathtiff=os.path.join(self.saving,"tiff")
+        self.pathsmv=os.path.join(self.saving,"SMV")
+        self.pathred=os.path.join(self.saving,"RED")
+
+        self.logger.info("Data recording started at: {}".format(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+        self.logger.info("Data saving path: {}".format(self.saving))
+        self.logger.info("Data collection exposure time: {} s".format(self.Expt.get()))
+        self.cl=int(ctrl.magnification.get())/10
+        self.logger.info("Data collection camera length: {} cm".format(self.cl))
+        self.logger.info("Data collection spot size: {}".format(ctrl.spotsize))
+        
+        w=Tk()
+        w.after(5000,lambda:w.destroy())
+        Label(w,text="Now you can start to rotate the goniometer at any time.").pack()
+        Label(w,text="Remove your foot from the pedal BEFORE click STOP COLLECTION!").pack()
+        Label(w,text="Window autocloses in 3 sec.").pack()
+        
+        while abs(a-a0)<0.5:
+            a=ctrl.stageposition.a
+            if abs(a-a0)>0.5:
+                break
+        
+        self.startangle=a
+        
+        ctrl.cam.block()
         
         while not self.t.is_set():
-            print ('Collecting...')
-            time.sleep(1)
+            ctrl.getimage(expt,1,out=os.path.join(self.pathtiff,"{}.tiff".format(ind)),header_keys=None)
+            ind=ind+1
             self.root.update()
-    
+            
+        ctrl.cam.unblock()
+        self.endangle=ctrl.stageposition.a
+        ind_set.append(ind)
+        
+        self.ind=ind
+        
+        self.logger.info("Data collected from {} degree to {} degree.".format(self.startangle,self.endangle))
+        
+        listing=glob.glob(self.pathtiff)
+        numfr=len(listing)
+        osangle=(self.endangle-self.startangle)/numfr
+        if osangle>0:
+            self.logger.info("Oscillation angle: {}".format(osangle))
+        else:
+            self.logger.info("Oscillation angle: {}".format(-osangle))
+        
+        self.logger.info("Pixel size and actual camera length updated in SMV file headers for DIALS processing.")
+        self.logger.info("XDS INP file created as usual.")
+        pb=ImgConversion.ImgConversion.TiffToIMG(self.pathtiff,self.pathsmv,str(self.cl),self.startangle,osangle,self.logger)
+        pxs=ImgConversion.ImgConversion.pxd[str(self.cl)]
+        ImgConversion.ImgConversion.ED3DCreator(self.pathtiff,self.pathred,pxs,self.startangle,self.endangle,self.logger)
+        ImgConversion.ImgConversion.MRCCreator(self.pathtiff,self.pathred,header=ImgConversion.ImgConversion.mrc_header,pb=pb,logger=self.logger)
+        
+        RA=-38.5
+        ImgConversion.ImgConversion.XDSINPCreator(self.pathsmv,self.ind,self.startangle,20,0.8,pb,str(self.cl),osangle,RA,self.logger)
+        
+        w=Tk()
+        Label(w,text="Data conversion done.").pack()
+        Label(w,text="Click Continue Collection to continue data collection. Otherwise click EXIT.").pack()
+        
     def collectionstop(self):
         self.t.set()
         print ('Collection stopped.')
@@ -393,29 +466,11 @@ class VideoStream(threading.Thread):
     def continuecollection(self):
         self.t.clear()
         
-"""class cRED_Collection(threading.Thread):
-    def __init__(self):
-        threading.Thread.__init__(self)
-        self.start()
-        self.t=threading.Event()
-        self.t.clear()
-        self.lock=threading.Lock()
-        self.lock_stop=threading.Lock()
+    def close_window(self):
+        import sys
+        sys.exit()
         
-    def start_collection(self):
-        self.lock.acquire()
-        while not self.t.is_set():
-            print ('Collecting...')
-        self.lock.release()
-        
-    def stop_collection(self):
-        self.lock_stop.acquire()
-        self.t.set()
-        self.lock_stop.release()
-        
-    def continue_collection(self):
-        self.t.clear()"""
-        
+
 if __name__ == '__main__':
     from instamatic import TEMController
     ctrl=TEMController.initialize(camera="timepix")
