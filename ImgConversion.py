@@ -13,7 +13,8 @@ import tqdm
 from instamatic.flatfield import apply_flatfield_correction
 from scipy import ndimage
 import msvcrt
-
+from Tkinter import *
+import ttk
 
 class ImgConversion:
     
@@ -73,7 +74,13 @@ class ImgConversion:
     
         logger.debug("Primary beam at: {}".format(pb))
         
-        for f in tqdm(filenamelist,desc='TiffToIMG'):
+        for f in filenamelist:
+            w=Tk()
+            Label(w,text="TiffToIMG in progress...").pack()
+            progress=ttk.Progressbar(w,orient=HORIZONTAL,mode="indeterminate")
+            progress.pack()
+            progress.start()
+            
             img=fabio.open(os.path.join(pathtiff,"{}.tiff".format(f)))
             data=np.ushort(img.data)
             ## if it's original tiff image from Sophy need to correct the intensity at cross
@@ -124,6 +131,7 @@ class ImgConversion:
             newimg.write(os.path.join(pathsmv,"{}.img".format(f)))
         
         logger.debug("SMV files (size 512*512) saved in folder: {}".format(pathsmv))
+        w.destroy()
         return pb
     
     def affine_transform_ellipse_to_circle(self,azimuth, stretch, inverse=False):
@@ -198,6 +206,12 @@ class ImgConversion:
         return newImage
             
     def MRCCreator(self,pathtiff,pathred,header,pb,logger):
+        w=Tk()
+        Label(w,text="MRC Creation in progress...").pack()
+        progress=ttk.Progressbar(w,orient=HORIZONTAL,mode="indeterminate")
+        progress.pack()
+        progress.start()
+        
         print ("Tiff converting to MRC......")
         listing=glob.glob(os.path.join(pathtiff,"*.tiff"))
         filenamelist=[]
@@ -218,6 +232,7 @@ class ImgConversion:
             ind=ind+1
             
         logger.debug("MRC files created in folder: {}".format(pathred))
+        w.destroy()
         
     def ED3DCreator(self,pathtiff,pathred,pxs,startangle,endangle,logger):
         print ("Creating ed3d file......")

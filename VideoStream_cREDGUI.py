@@ -8,6 +8,7 @@ import datetime
 from instamatic.formats import write_tiff
 from instamatic.camera import Camera
 import os
+import fabio
 import glob
 import ImgConversion
 
@@ -65,10 +66,14 @@ class ImageGrabber(object):
 
 class VideoStream(threading.Thread):
     """docstring for VideoStream"""
-    def __init__(self, cam="simulate"):
+    def __init__(self, cam="timepix"):
         threading.Thread.__init__(self)
-
-        self.cam = Camera(kind=cam)
+        try:
+            self.cam = Camera(kind=cam)
+            self.camtyp=1
+        except RuntimeError:
+            self.cam = Camera(kind="simulate")
+            self.camtyp=0
 
         self.panel = None
 
@@ -391,6 +396,19 @@ class VideoStream(threading.Thread):
     
     def collection(self):
         self.t=threading.Event()
+        
+        #cwd=os.getcwd()
+        flatfield=fabio.open(os.path.join(r'C:\Users\bwang\workspace\cRED_Collection_Structured','flatfield_tpx_2017-06-21.tiff'))
+        data=flatfield.data
+        newdata=np.zeros([512,512],dtype=np.ushort)
+        newdata[0:256,0:256]=data[0:256,0:256]
+        newdata[256:,0:256]=data[260:,0:256]
+        newdata[0:256,256:]=data[0:256,260:]
+        newdata[256:,256:]=data[260:,260:]
+        flatfield=newdata
+        
+        pxd={'15': 0.00838, '20': 0.00623, '25': 0.00499, '30': 0.00412, '40': 0.00296, '50': 0.00238, '60': 0.00198, '80': 0.00148}
+        
         a0=ctrl.stageposition.a
         a=a0
         ind_set=[]
@@ -415,23 +433,37 @@ class VideoStream(threading.Thread):
         Label(w,text="Remove your foot from the pedal BEFORE click STOP COLLECTION!").pack()
         Label(w,text="Window autocloses in 3 sec.").pack()
         
-        while abs(a-a0)<0.5:
-            a=ctrl.stageposition.a
-            if abs(a-a0)>0.5:
-                break
-        
-        self.startangle=a
-        
-        ctrl.cam.block()
-        
-        while not self.t.is_set():
-            ctrl.getimage(expt,1,out=os.path.join(self.pathtiff,"{}.tiff".format(ind)),header_keys=None)
-            ind=ind+1
-            self.root.update()
+        if self.camtyp == 1:
+            while abs(a-a0)<0.5:
+                a=ctrl.stageposition.a
+                if abs(a-a0)>0.5:
+                    break
             
-        ctrl.cam.unblock()
-        self.endangle=ctrl.stageposition.a
-        ind_set.append(ind)
+            self.startangle=a
+            
+            ctrl.cam.block()
+            
+            while not self.t.is_set():
+                ctrl.getimage(expt,1,out=os.path.join(self.pathtiff,"{}.tiff".format(ind)),header_keys=None)
+                ind=ind+1
+                self.root.update()
+                
+            ctrl.cam.unblock()
+            self.endangle=ctrl.stageposition.a
+            ind_set.append(ind)
+            
+        else:
+            self.startangle=a
+            self.cl=30
+            flatfield=np.random.rand(1024,1024)
+            while not self.t.is_set():
+                write_tiff(os.path.join(self.pathtiff,"{}.tiff".format(ind)), np.random.rand(1024,1024))
+                print ("Simulated image saved...")
+                time.sleep(expt)
+                ind=ind+1
+                self.root.update()
+            self.endangle=self.startangle+10
+            ind_set.append(ind)
         
         self.ind=ind
         
@@ -447,13 +479,14 @@ class VideoStream(threading.Thread):
         
         self.logger.info("Pixel size and actual camera length updated in SMV file headers for DIALS processing.")
         self.logger.info("XDS INP file created as usual.")
-        pb=ImgConversion.ImgConversion.TiffToIMG(self.pathtiff,self.pathsmv,str(self.cl),self.startangle,osangle,self.logger)
-        pxs=ImgConversion.ImgConversion.pxd[str(self.cl)]
-        ImgConversion.ImgConversion.ED3DCreator(self.pathtiff,self.pathred,pxs,self.startangle,self.endangle,self.logger)
-        ImgConversion.ImgConversion.MRCCreator(self.pathtiff,self.pathred,header=ImgConversion.ImgConversion.mrc_header,pb=pb,logger=self.logger)
+        buf=ImgConversion.ImgConversion(flatfield,pxd)
+        pb=buf.TiffToIMG(self.pathtiff,self.pathsmv,str(self.cl),self.startangle,osangle,self.logger)
+        pxs=pxd[str(self.cl)]
+        buf.ED3DCreator(self.pathtiff,self.pathred,pxs,self.startangle,self.endangle,self.logger)
+        buf.MRCCreator(self.pathtiff,self.pathred,header=ImgConversion.ImgConversion.mrc_header,pb=pb,logger=self.logger)
         
         RA=-38.5
-        ImgConversion.ImgConversion.XDSINPCreator(self.pathsmv,self.ind,self.startangle,20,0.8,pb,str(self.cl),osangle,RA,self.logger)
+        buf.XDSINPCreator(self.pathsmv,self.ind,self.startangle,20,0.8,pb,str(self.cl),osangle,RA,self.logger)
         
         w=Tk()
         Label(w,text="Data conversion done.").pack()
@@ -474,7 +507,7 @@ class VideoStream(threading.Thread):
 if __name__ == '__main__':
     from instamatic import TEMController
     ctrl=TEMController.initialize(camera="timepix")
-    stream = VideoStream(cam="simulate")
+    stream = VideoStream()
     from IPython import embed
     embed()
     stream.close()
