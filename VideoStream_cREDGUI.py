@@ -11,6 +11,7 @@ import os
 import fabio
 import glob
 import ImgConversion
+from instamatic import TEMController
 
 class ImageGrabber(object):
     """docstring for ImageGrabber"""
@@ -63,6 +64,123 @@ class ImageGrabber(object):
     def end_loop(self):
         self.thread.stop()
 
+class DataColl(object):
+    """independent event for data collection"""
+    def __init__(self,ctrl,path,expt,logger,camtyp):
+        self.ctrl=ctrl
+        self.saving=path
+        self.expt=expt
+        self.logger=logger
+        self.camtyp=camtyp
+        self.t=threading.Event()
+
+    def start_collection(self):
+        self.saving=stream.saving
+        if self.saving != None:
+            flatfield=fabio.open(os.path.join(r'C:\Users\bwang\workspace\cRED_Collection_Structured','flatfield_tpx_2017-06-21.tiff'))
+            data=flatfield.data
+            newdata=np.zeros([512,512],dtype=np.ushort)
+            newdata[0:256,0:256]=data[0:256,0:256]
+            newdata[256:,0:256]=data[260:,0:256]
+            newdata[0:256,256:]=data[0:256,260:]
+            newdata[256:,256:]=data[260:,260:]
+            flatfield=newdata
+            
+            pxd={'15': 0.00838, '20': 0.00623, '25': 0.00499, '30': 0.00412, '40': 0.00296, '50': 0.00238, '60': 0.00198, '80': 0.00148}
+            
+            a0=self.ctrl.stageposition.a
+            a=a0
+            ind_set=[]
+            ind=10001
+            ind_set.append(ind)
+            
+            self.pathtiff=os.path.join(self.saving,"tiff")
+            self.pathsmv=os.path.join(self.saving,"SMV")
+            self.pathred=os.path.join(self.saving,"RED")
+    
+            self.logger.info("Data recording started at: {}".format(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+            self.logger.info("Data saving path: {}".format(self.saving))
+            self.logger.info("Data collection exposure time: {} s".format(self.expt))
+            camlen = int(self.ctrl.magnification.get())/10
+            self.logger.info("Data collection camera length: {} cm".format(camlen))
+            self.logger.info("Data collection spot size: {}".format(self.ctrl.spotsize))
+            
+            w=Tk()
+            w.after(5000,lambda:w.destroy())
+            Label(w,text="Now you can start to rotate the goniometer at any time.").pack()
+            Label(w,text="Remove your foot from the pedal BEFORE click STOP COLLECTION!").pack()
+            Label(w,text="Window autocloses in 3 sec.").pack()
+            
+            if self.camtyp == 1:
+                while abs(a-a0)<0.5:
+                    a=self.ctrl.stageposition.a
+                    if abs(a-a0)>0.5:
+                        break
+                
+                self.startangle=a
+                
+                self.ctrl.cam.block()
+                
+                while not self.t.is_set():
+                    self.ctrl.getimage(self.expt,1,out=os.path.join(self.pathtiff,"{}.tiff".format(ind)),header_keys=None)
+                    ind=ind+1
+                    self.root.update()
+                    
+                self.ctrl.cam.unblock()
+                self.endangle=self.ctrl.stageposition.a
+                ind_set.append(ind)
+                
+            else:
+                self.startangle=a
+                camlen=30
+                flatfield=np.random.rand(1024,1024)
+                while not self.t.is_set():
+                    write_tiff(os.path.join(self.pathtiff,"{}.tiff".format(ind)), np.random.rand(1024,1024))
+                    print (self.ctrl.stageposition.a)
+                    print ("test")
+                    time.sleep(self.expt)
+                    ind=ind+1
+                    self.root.update()
+                self.endangle=self.startangle+10
+                ind_set.append(ind)
+            
+            self.ind=ind
+            
+            self.logger.info("Data collected from {} degree to {} degree.".format(self.startangle,self.endangle))
+            
+            listing=glob.glob(self.pathtiff)
+            numfr=len(listing)
+            osangle=(self.endangle-self.startangle)/numfr
+            if osangle>0:
+                self.logger.info("Oscillation angle: {}".format(osangle))
+            else:
+                self.logger.info("Oscillation angle: {}".format(-osangle))
+            
+            self.logger.info("Pixel size and actual camera length updated in SMV file headers for DIALS processing.")
+            self.logger.info("XDS INP file created as usual.")
+            buf=ImgConversion.ImgConversion(flatfield,pxd)
+            pb=buf.TiffToIMG(self.pathtiff,self.pathsmv,str(camlen),self.startangle,osangle,self.logger)
+            pxs=pxd[str(camlen)]
+            buf.ED3DCreator(self.pathtiff,self.pathred,pxs,self.startangle,self.endangle,self.logger)
+            buf.MRCCreator(self.pathtiff,self.pathred,header=ImgConversion.ImgConversion.mrc_header,pb=pb,logger=self.logger)
+            
+            RA=-38.5
+            buf.XDSINPCreator(self.pathsmv,self.ind,self.startangle,20,0.8,pb,str(camlen),osangle,RA,self.logger)
+            
+            w=Tk()
+            Label(w,text="Data conversion done.").pack()
+            Label(w,text="Click Continue Collection to continue data collection. Otherwise click EXIT.").pack()
+            
+        else:
+            print ("No stream saving path")
+        
+
+    def collectionstop(self):
+        self.t.set()
+        print ('Collection stopped.')
+        
+    def continuecollection(self):
+        self.t.clear()
 
 class VideoStream(threading.Thread):
     """docstring for VideoStream"""
@@ -92,6 +210,9 @@ class VideoStream(threading.Thread):
         self.nframes = 1
         self.update_frequency = 0.25
         self.last_interval = self.frametime
+
+        self.ctrl=None
+        self.saving=None
 
         self.stream = self.setup_stream()
         self.start()
@@ -133,12 +254,12 @@ class VideoStream(threading.Thread):
         self.ConfirmButton1= Button(frame,text="Confirm",command=self.mkdirs)
         self.ConfirmButton1.grid(row=3,column=3)
         
-        #var=cRED_Collection()
-        self.CollectionButton=Button(frame,text="Start Collection",command=self.collection)
+        self.coll=self.coll_init(self.ctrl)
+        self.CollectionButton=Button(frame,text="Start Collection",command=self.coll.start_collection)
         self.CollectionButton.grid(row=3,column=4)
-        self.CollectionStopButton=Button(frame,text="Stop Collection",command=self.collectionstop)
+        self.CollectionStopButton=Button(frame,text="Stop Collection",command=self.coll.collectionstop)
         self.CollectionStopButton.grid(row=3,column=5)
-        self.CollectionContButton=Button(frame,text="Continue Collection",command=self.continuecollection)
+        self.CollectionContButton=Button(frame,text="Continue Collection",command=self.coll.continuecollection)
         self.CollectionContButton.grid(row=3,column=6)
         self.exitButton=Button(frame,text="EXIT",command=self.close_window)
         self.exitButton.grid(row=3,column=7)
@@ -248,6 +369,15 @@ class VideoStream(threading.Thread):
 
     def setup_stream(self):
         return ImageGrabber(self.cam, callback=self.send_frame, frametime=self.frametime)
+
+    def set_ctrl(self,ctrl):
+        self.ctrl = ctrl
+
+    def coll_init(self,ctrl):
+        return DataColl(ctrl,None,0,None,self.camtyp)
+    
+    def update_coll(self):
+        return DataColl(ctrl,self.saving,float(self.Expt.get()),self.logger,self.camtyp)
     
     def start_stream(self):
         self.stream.start_loop()
@@ -396,111 +526,9 @@ class VideoStream(threading.Thread):
         self.logger.info("log file and folders created")
         self.logger.info("Data collection started at: {}".format(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
         
-    
-    def collection(self):
-        self.t=threading.Event()
+        self.coll=self.update_coll()
+        print (self.saving,float(self.Expt.get()),self.logger,self.camtyp)
         
-        #cwd=os.getcwd()
-        flatfield=fabio.open(os.path.join(r'C:\Users\bwang\workspace\cRED_Collection_Structured','flatfield_tpx_2017-06-21.tiff'))
-        data=flatfield.data
-        newdata=np.zeros([512,512],dtype=np.ushort)
-        newdata[0:256,0:256]=data[0:256,0:256]
-        newdata[256:,0:256]=data[260:,0:256]
-        newdata[0:256,256:]=data[0:256,260:]
-        newdata[256:,256:]=data[260:,260:]
-        flatfield=newdata
-        
-        pxd={'15': 0.00838, '20': 0.00623, '25': 0.00499, '30': 0.00412, '40': 0.00296, '50': 0.00238, '60': 0.00198, '80': 0.00148}
-        
-        a0=ctrl.stageposition.a
-        a=a0
-        ind_set=[]
-        ind=10001
-        ind_set.append(ind)
-        expt=float(self.Expt.get())
-        
-        self.pathtiff=os.path.join(self.saving,"tiff")
-        self.pathsmv=os.path.join(self.saving,"SMV")
-        self.pathred=os.path.join(self.saving,"RED")
-
-        self.logger.info("Data recording started at: {}".format(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-        self.logger.info("Data saving path: {}".format(self.saving))
-        self.logger.info("Data collection exposure time: {} s".format(self.Expt.get()))
-        self.cl=int(ctrl.magnification.get())/10
-        self.logger.info("Data collection camera length: {} cm".format(self.cl))
-        self.logger.info("Data collection spot size: {}".format(ctrl.spotsize))
-        
-        w=Tk()
-        w.after(5000,lambda:w.destroy())
-        Label(w,text="Now you can start to rotate the goniometer at any time.").pack()
-        Label(w,text="Remove your foot from the pedal BEFORE click STOP COLLECTION!").pack()
-        Label(w,text="Window autocloses in 3 sec.").pack()
-        
-        if self.camtyp == 1:
-            while abs(a-a0)<0.5:
-                a=ctrl.stageposition.a
-                if abs(a-a0)>0.5:
-                    break
-            
-            self.startangle=a
-            
-            ctrl.cam.block()
-            
-            while not self.t.is_set():
-                ctrl.getimage(expt,1,out=os.path.join(self.pathtiff,"{}.tiff".format(ind)),header_keys=None)
-                ind=ind+1
-                self.root.update()
-                
-            ctrl.cam.unblock()
-            self.endangle=ctrl.stageposition.a
-            ind_set.append(ind)
-            
-        else:
-            self.startangle=a
-            self.cl=30
-            flatfield=np.random.rand(1024,1024)
-            while not self.t.is_set():
-                write_tiff(os.path.join(self.pathtiff,"{}.tiff".format(ind)), np.random.rand(1024,1024))
-                print ("Simulated image saved...")
-                time.sleep(expt)
-                ind=ind+1
-                self.root.update()
-            self.endangle=self.startangle+10
-            ind_set.append(ind)
-        
-        self.ind=ind
-        
-        self.logger.info("Data collected from {} degree to {} degree.".format(self.startangle,self.endangle))
-        
-        listing=glob.glob(self.pathtiff)
-        numfr=len(listing)
-        osangle=(self.endangle-self.startangle)/numfr
-        if osangle>0:
-            self.logger.info("Oscillation angle: {}".format(osangle))
-        else:
-            self.logger.info("Oscillation angle: {}".format(-osangle))
-        
-        self.logger.info("Pixel size and actual camera length updated in SMV file headers for DIALS processing.")
-        self.logger.info("XDS INP file created as usual.")
-        buf=ImgConversion.ImgConversion(flatfield,pxd)
-        pb=buf.TiffToIMG(self.pathtiff,self.pathsmv,str(self.cl),self.startangle,osangle,self.logger)
-        pxs=pxd[str(self.cl)]
-        buf.ED3DCreator(self.pathtiff,self.pathred,pxs,self.startangle,self.endangle,self.logger)
-        buf.MRCCreator(self.pathtiff,self.pathred,header=ImgConversion.ImgConversion.mrc_header,pb=pb,logger=self.logger)
-        
-        RA=-38.5
-        buf.XDSINPCreator(self.pathsmv,self.ind,self.startangle,20,0.8,pb,str(self.cl),osangle,RA,self.logger)
-        
-        w=Tk()
-        Label(w,text="Data conversion done.").pack()
-        Label(w,text="Click Continue Collection to continue data collection. Otherwise click EXIT.").pack()
-        
-    def collectionstop(self):
-        self.t.set()
-        print ('Collection stopped.')
-        
-    def continuecollection(self):
-        self.t.clear()
         
     def close_window(self):
         import sys
@@ -508,9 +536,19 @@ class VideoStream(threading.Thread):
         
 
 if __name__ == '__main__':
-    from instamatic import TEMController
-    ctrl=TEMController.initialize(camera="timepix")
+    from instamatic.TEMController import config
+    from instamatic.TEMController.jeol_microscope import JeolMicroscope
+    from instamatic.TEMController.simu_microscope import SimuMicroscope
+    try:
+        config.load(camera="timepix")
+        tem = JeolMicroscope()
+    except WindowsError:
+        config.load()
+        tem = SimuMicroscope()
     stream = VideoStream()
+    ctrl = TEMController.TEMController.TEMController(tem, stream)
+    stream.set_ctrl(ctrl)
+    stream.coll_init(ctrl)
     from IPython import embed
     embed()
     stream.close()
